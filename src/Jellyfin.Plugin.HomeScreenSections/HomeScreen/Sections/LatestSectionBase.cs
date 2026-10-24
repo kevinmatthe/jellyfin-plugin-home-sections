@@ -1,4 +1,4 @@
-﻿using Jellyfin.Plugin.HomeScreenSections.Configuration;
+using Jellyfin.Plugin.HomeScreenSections.Configuration;
 using Jellyfin.Plugin.HomeScreenSections.Helpers;
 using Jellyfin.Plugin.HomeScreenSections.Library;
 using Jellyfin.Plugin.HomeScreenSections.Model.Dto;
@@ -82,68 +82,37 @@ namespace Jellyfin.Plugin.HomeScreenSections.HomeScreen.Sections
                 .Where(x => x.CollectionType == CollectionTypeOptions || x.IsMixedFolder(m_libraryManager))
                 .FilterToUserPermitted(m_libraryManager, user);
 
-            List<(BaseItem Item, DateTime? PremiereDate)> selectedItems = new List<(BaseItem, DateTime?)>();
-            int dayIncrement = 30;
+            const int resultLimit = 16;
             DateTime currentDate = DateTime.Now;
-            DateTime stopDate = DateTime.Parse("01/01/1887"); // The first movie ever was 1888 so this should be safe, we never expect to get as far back as this but we need an escape.
-            bool continueSearching = true;
+            DateTime stopDate = new DateTime(1887, 1, 1);
+            // Preserve the original search horizon without querying every month
+            // separately. Empty/sparse libraries must not cause 1,700 queries.
+            DateTime earliestDate = currentDate.AddDays(-30 * Math.Ceiling((currentDate - stopDate).TotalDays / 30));
 
-            do
-            {
-                var latestMovies = folders.Select(x =>
+            var selectedItems = folders.SelectMany(x =>
                 {
                     var item = m_libraryManager.GetParentItem(Guid.Parse(x.ItemId), user?.Id);
-
-                    if (item is not Folder folder)
+                    var folder = item as Folder ?? m_libraryManager.GetUserRootFolder();
+                    return folder.GetItems(new InternalItemsQuery(user)
                     {
-                        folder = m_libraryManager.GetUserRootFolder();
-                    }
-
-                    var items = folder.GetItems(new InternalItemsQuery(user)
-                    {
-                        IncludeItemTypes = new[]
-                        {
-                            SectionItemKind
-                        },
-                        Limit = 16,
-                        OrderBy = new[]
-                        {
-                            (ItemSortBy.PremiereDate, SortOrder.Descending)
-                        },
+                        IncludeItemTypes = new[] { SectionItemKind },
+                        Limit = resultLimit,
+                        OrderBy = new[] { (ItemSortBy.PremiereDate, SortOrder.Descending) },
                         IsPlayed = isPlayed,
                         ParentId = Guid.Parse(x.ItemId),
                         Recursive = true,
                         MaxPremiereDate = currentDate,
-                        MinPremiereDate = currentDate.Subtract(TimeSpan.FromDays(dayIncrement)),
-                        EnableTotalRecordCount = true // This might have to go
-                    });
+                        MinPremiereDate = earliestDate,
+                        EnableTotalRecordCount = false
+                    }).Items;
+                })
+                .DistinctBy(item => item.Id)
+                .OrderByDescending(item => item.PremiereDate)
+                .Take(resultLimit)
+                .ToArray();
 
-                    return (Items: items.Items, items.Items.Count, items.TotalRecordCount);
-                }).ToArray();
-                
-                var itemsToAdd = latestMovies
-                    .SelectMany(x => x.Items)
-                    .Where(x => selectedItems.All(y => y.Item.Id != x.Id))
-                    .Select(x => (Item: x, PremiereDate: x.PremiereDate))
-                    .ToList();
-                
-                selectedItems.AddRange(itemsToAdd);
-
-                if (selectedItems.Count >= 16)
-                {
-                    continueSearching = false;
-                }
-                
-                currentDate = currentDate.Subtract(TimeSpan.FromDays(dayIncrement));
-                
-                if (currentDate < stopDate)
-                {
-                    break;
-                }
-            } while (continueSearching);
-
-            return new QueryResult<BaseItemDto>(Array.ConvertAll(selectedItems.OrderByDescending(x => x.PremiereDate).Select(x => x.Item).ToArray(),
-                i => m_dtoService.GetBaseItemDto(i, dtoOptions, user)));
+            return new QueryResult<BaseItemDto>(Array.ConvertAll(selectedItems,
+                item => m_dtoService.GetBaseItemDto(item, dtoOptions, user)));
         }
         
         public IEnumerable<IHomeScreenSection> CreateInstances(Guid? userId, int instanceCount)

@@ -228,3 +228,21 @@ When your section results method is invoked you will receive an object represent
 The `/HomeScreen/Sections`, `/HomeScreen/Section/{sectionType}` and `/ModularHomeViews/UserSettings` endpoints require authentication as an existing user. Clients can continue sending `userId`, but it must match the authenticated user, including for administrators; a different ID returns HTTP 403. Omitting `userId` from `/HomeScreen/Sections` or `GET /ModularHomeViews/UserSettings` uses the authenticated user. Section results handlers receive that user in `UserId`.
 
 You must make sure that your section results method returns a `QueryResult<BaseItemDto>`.
+
+
+## Local page-cache fix (3.0.3.1)
+
+The web client creates `PageHash` for a paginated home screen. Bind the hash to its first authenticated user so later requests reuse that snapshot. Existing hashes owned by another user remain isolated, cache reads check snapshot ownership, and concurrent first requests share one builder. No section selection or ordering is changed.
+
+Regression checks exercise the real service with neutral sections:
+
+```sh
+dotnet run --project tests/HomeSections.Cache.Checks -c Release -p:JellyfinVersion=12.2.0 -p:GitBranch=fix/page-hash-cache
+```
+
+
+### Bounded latest-section queries (3.0.3.2)
+
+Latest Books, Movies, Albums and other shared latest rows now query each visible library once for its newest sixteen dated items, then merge/deduplicate and cap the row at sixteen. Missing publication dates retain their existing exclusion. Sparse or empty results no longer trigger monthly queries all the way back to 1887.
+
+Latest Shows pages actual episodes newest-first instead of backtracking by month to 1925. It resolves distinct series in batches, continues beyond a long-running series when needed, and stops once unseen episodes cannot improve the newest sixteen series. Empty episode results do not issue an unrestricted series lookup. Both paths retain user visibility and watched-item filters and disable unnecessary total counts.

@@ -32,7 +32,8 @@ namespace Jellyfin.Plugin.HomeScreenSections.Services
 
         public List<HomeScreenSectionInfo>? GetCachedSectionsForUser(Guid userId, string? language, int page, int pageSize, Guid pageHash)
         {
-            if (!m_dataCache.Cache.TryGetValue(pageHash, out UserSectionsData? userSectionsData))
+            if (!m_dataCache.Cache.TryGetValue(pageHash, out UserSectionsData? userSectionsData)
+                || userSectionsData.UserId != userId)
             {
                 return null;
             }
@@ -197,7 +198,11 @@ namespace Jellyfin.Plugin.HomeScreenSections.Services
                     MaxOrderIndex = groupedOrderedSections.Select(g => g.Key).DefaultIfEmpty(0).Max()
                 };
                 
-                m_dataCache.Cache.TryAdd(pageHash.Value, userSectionsData);
+                if (!m_dataCache.Cache.TryAdd(pageHash.Value, userSectionsData))
+                {
+                    // Another request already owns generation of this snapshot.
+                    return;
+                }
 
                 foreach (int orderIndex in groupedOrderedSections.Select(x => x.Key).OrderBy(x => x))
                 {
@@ -329,7 +334,17 @@ namespace Jellyfin.Plugin.HomeScreenSections.Services
         
         private bool DoesPageBelongToUser(Guid pageHash, Guid userId)
         {
-            return m_dataCache.PageHashOwnerIds.TryGetValue(pageHash, out Guid ownerId) && ownerId == userId;
+            // The web client generates the hash. Bind its first use atomically;
+            // replacing every unknown hash prevents subsequent pages from ever
+            // finding their snapshot. An existing owner's hash is never shared.
+            Guid ownerId = m_dataCache.PageHashOwnerIds.GetOrAdd(pageHash, userId);
+            if (ownerId != userId)
+            {
+                return false;
+            }
+
+            m_dataCache.PageHashExpiry.TryAdd(pageHash, DateTime.UtcNow.AddHours(1));
+            return true;
         }
     }
 
